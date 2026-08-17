@@ -72,6 +72,12 @@ jobs:
         with:
           fetch-depth: 0            # harness needs release tags
           persist-credentials: false # the harness only ever touches a local mirror
+      # Forks often lack upstream release tags. Without them the gate exits
+      # "No release tag is an ancestor of HEAD" even with fetch-depth: 0.
+      # Best-effort fetch from the canonical upstream; no-op when tags exist.
+      - name: Ensure upstream release tags (forks)
+        run: |
+          git fetch --tags --force https://github.com/santifer/career-ops.git             'refs/tags/career-ops-v*:refs/tags/career-ops-v*' || true
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
