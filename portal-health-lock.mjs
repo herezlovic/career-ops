@@ -164,6 +164,8 @@ export async function acquirePortalHealthLock(filePath, options = {}) {
 
     // Acquired. Record ownership; an owner-less lock would block every future
     // acquirer until the age-out, so clean up if the stamp can't be written.
+    // Windows reclaim between mkdir and write → ENOENT: treat as contention
+    // and retry (same race as pipeline-lock.mjs / agent-inbox concurrent adds).
     try {
       writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({
         pid: process.pid,
@@ -172,7 +174,13 @@ export async function acquirePortalHealthLock(filePath, options = {}) {
         file: filePath,
       }, null, 2));
     } catch (ownerErr) {
-      rmSync(lockDir, { recursive: true, force: true });
+      try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      // ENOENT: parent reclaimed under us. EPERM/EACCES: Windows mid-flight.
+      if (ownerErr?.code === 'ENOENT' || ownerErr?.code === 'EPERM' || ownerErr?.code === 'EACCES') {
+        if (Date.now() > deadline) throw new LockTimeoutError(lockDir, timeoutMs);
+        await sleep(retryMs * (0.5 + Math.random()));
+        continue;
+      }
       throw ownerErr;
     }
 

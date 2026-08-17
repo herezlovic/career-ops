@@ -254,6 +254,11 @@ export async function acquirePipelineLock(pipelinePath, options = {}) {
 
     // Acquired. Record ownership; an owner-less lock would block every future
     // acquirer until the age-out, so clean up if the stamp can't be written.
+    //
+    // On Windows a concurrent reclaim can delete lockDir between our successful
+    // mkdir and this write (#2777 family): writeFileSync then throws ENOENT
+    // (parent gone). That is contention, not a hard failure — retry the loop
+    // instead of crashing the writer and dropping its item (kept=29 of 30).
     try {
       writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({
         pid: process.pid,
@@ -262,7 +267,13 @@ export async function acquirePipelineLock(pipelinePath, options = {}) {
         pipeline: pipelinePath,
       }, null, 2));
     } catch (ownerErr) {
-      rmSync(lockDir, { recursive: true, force: true });
+      try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      if (ownerErr?.code === 'ENOENT' || isMkdirContention(ownerErr)) {
+        lastContentionError = ownerErr;
+        if (Date.now() > deadline) throw buildTimeoutError();
+        await sleep(retryMs * (0.5 + Math.random()));
+        continue;
+      }
       throw ownerErr;
     }
 
